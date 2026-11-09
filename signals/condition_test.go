@@ -24,6 +24,8 @@ func TestMatch(t *testing.T) {
 		{"vol_ma nil volume", Condition{Kind: "vol_ma", Op: "gt", Value: f(1.5), Period: i(5)}, Bar{VolMA: map[int]float64{5: 10000}}, nil, false},
 		{"vol_ma nil period", Condition{Kind: "vol_ma", Op: "gt", Value: f(1.5)}, Bar{Volume: f(15001), VolMA: map[int]float64{5: 10000}}, nil, false},
 		{"vol_ma nil value", Condition{Kind: "vol_ma", Op: "gt", Period: i(5)}, Bar{Volume: f(15001), VolMA: map[int]float64{5: 10000}}, nil, false},
+		{"vol_ma gt float boundary", Condition{Kind: "vol_ma", Op: "gt", Value: f(0.7), Period: i(5)}, Bar{Volume: f(63), VolMA: map[int]float64{5: 90}}, nil, true},
+		{"vol_ma lt float boundary", Condition{Kind: "vol_ma", Op: "lt", Value: f(0.7), Period: i(5)}, Bar{Volume: f(63), VolMA: map[int]float64{5: 90}}, nil, false},
 		{"insti foreign true", Condition{Kind: "insti_avg", Entity: "foreign", Op: "lt", Value: f(-1000), Period: i(10)}, Bar{ForeignAvg: map[int]float64{10: -1532}}, nil, true},
 		{"insti foreign false", Condition{Kind: "insti_avg", Entity: "foreign", Op: "lt", Value: f(-1000), Period: i(10)}, Bar{ForeignAvg: map[int]float64{10: -500}}, nil, false},
 		{"insti foreign equal", Condition{Kind: "insti_avg", Entity: "foreign", Op: "lt", Value: f(-1000), Period: i(10)}, Bar{ForeignAvg: map[int]float64{10: -1000}}, nil, false},

@@ -65,7 +65,7 @@ func Match(c Condition, t Bar, p *PrevBar) bool {
 		if !ok || ma <= 0 {
 			return false
 		}
-		return compare(c.Op, *t.Volume/ma, *c.Value)
+		return compare(c.Op, *t.Volume, ma**c.Value)
 	case "insti_avg":
 		switch c.Entity {
 		case "foreign":

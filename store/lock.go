@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,6 +18,8 @@ func TryLock(ctx context.Context, pool *pgxpool.Pool) (release func(), ok bool, 
 		return nil, false, err
 	}
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, LockKey).Scan(&ok); err != nil {
+		// 鎖可能已在 server 端取得，關閉連線確保 session lock 釋放
+		_ = conn.Conn().Close(context.Background())
 		conn.Release()
 		return nil, false, err
 	}
@@ -26,8 +29,10 @@ func TryLock(ctx context.Context, pool *pgxpool.Pool) (release func(), ok bool, 
 	}
 	return func() {
 		// ctx 可能已取消，unlock 用獨立 context；失敗時連線關閉也會釋放 session lock
+		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		var unlocked bool
-		if err := conn.QueryRow(context.Background(), `SELECT pg_advisory_unlock($1)`, LockKey).Scan(&unlocked); err != nil || !unlocked {
+		if err := conn.QueryRow(uctx, `SELECT pg_advisory_unlock($1)`, LockKey).Scan(&unlocked); err != nil || !unlocked {
 			_ = conn.Conn().Close(context.Background())
 		}
 		conn.Release()

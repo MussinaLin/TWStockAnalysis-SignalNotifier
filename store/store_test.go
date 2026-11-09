@@ -171,12 +171,23 @@ func TestLoadBars_MatchesDB(t *testing.T) {
 		JOIN stock_daily_statistics s ON s.symbol = r.symbol AND s.trade_date = r.trade_date
 		JOIN stock_daily_indicators i ON i.symbol = r.symbol AND i.trade_date = r.trade_date
 		WHERE r.trade_date = $1 AND r.close IS NOT NULL AND r.symbol <> 'ZZ9999'
+		  AND EXISTS (SELECT 1 FROM stock_daily_indicators pi
+		      WHERE pi.symbol = r.symbol AND pi.kd_k IS NOT NULL AND pi.kd_d IS NOT NULL
+		        AND pi.trade_date = (SELECT max(x.trade_date) FROM stock_daily_raw x
+		            WHERE x.symbol = r.symbol AND x.trade_date < $1 AND x.trade_date >= $1::date - INTERVAL '1 year'))
 		ORDER BY r.symbol LIMIT 1`, d).Scan(&sym, &wantClose, &wantVol, &wantRSI, &wantK, &wantMA20, &wantF10)
 	require.NoError(t, err)
 
-	var wantPrev *float64
-	err = tx.QueryRow(ctx, `SELECT close::float8 FROM stock_daily_raw WHERE symbol = $1 AND trade_date < $2 ORDER BY trade_date DESC LIMIT 1`, sym, d).Scan(&wantPrev)
+	var wantPrev, wantPK, wantPD *float64
+	err = tx.QueryRow(ctx, `
+		SELECT r.close::float8, i.kd_k::float8, i.kd_d::float8
+		FROM stock_daily_raw r
+		LEFT JOIN stock_daily_indicators i ON i.symbol = r.symbol AND i.trade_date = r.trade_date
+		WHERE r.symbol = $1 AND r.trade_date < $2 AND r.trade_date >= $2::date - INTERVAL '1 year'
+		ORDER BY r.trade_date DESC LIMIT 1`, sym, d).Scan(&wantPrev, &wantPK, &wantPD)
 	require.NoError(t, err)
+	require.NotNil(t, wantPK)
+	require.NotNil(t, wantPD)
 
 	today, prev, err := st.LoadBars(ctx, []string{sym}, d)
 	require.NoError(t, err)
@@ -198,6 +209,8 @@ func TestLoadBars_MatchesDB(t *testing.T) {
 	p, ok := prev[sym]
 	require.True(t, ok)
 	assert.Equal(t, fp(wantPrev), fp(p.Close))
+	assert.Equal(t, fp(wantPK), fp(p.KDK))
+	assert.Equal(t, fp(wantPD), fp(p.KDD))
 }
 
 func TestLoadBars_NullsAbsent(t *testing.T) {
@@ -229,9 +242,16 @@ func TestHasIndicators(t *testing.T) {
 	latest, err := st.LatestTradeDate(ctx)
 	require.NoError(t, err)
 	assert.False(t, latest.IsZero())
-	ok, err := st.HasIndicators(ctx, indicatorDate(t, tx))
+	ind := indicatorDate(t, tx)
+	ok, err := st.HasIndicators(ctx, ind)
 	require.NoError(t, err)
 	assert.True(t, ok)
+	if !latest.Equal(ind) {
+		// 半套資料：raw 已有、indicators / statistics 還沒有
+		ok, err = st.HasIndicators(ctx, latest)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	}
 	ok, err = st.HasIndicators(ctx, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
 	assert.False(t, ok)

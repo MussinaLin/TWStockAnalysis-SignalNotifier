@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -11,7 +12,7 @@ import (
 var pool *pgxpool.Pool
 
 func InitPool() error {
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL is not set")
 	}

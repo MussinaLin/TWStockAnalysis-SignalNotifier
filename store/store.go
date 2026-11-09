@@ -65,8 +65,14 @@ func (s *Store) LoadLimits(ctx context.Context) (map[int]int, error) {
 	if err := s.q.QueryRow(ctx, `SELECT value FROM user_config WHERE key = 'CUSTOM_SIGNAL_LIMITS'`).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("load CUSTOM_SIGNAL_LIMITS: %w", err)
 	}
+	return parseLimits(raw)
+}
+
+// parseLimits 解析 CUSTOM_SIGNAL_LIMITS。非整數的 key、缺 stocks、stocks 為負的等級
+// 記 warn 後略過（該等級的使用者會被算進 MissingLevel）；JSON 本身無效才回錯誤。
+func parseLimits(raw []byte) (map[int]int, error) {
 	var parsed map[string]struct {
-		Stocks int `json:"stocks"`
+		Stocks *int `json:"stocks"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("parse CUSTOM_SIGNAL_LIMITS: %w", err)
@@ -75,14 +81,21 @@ func (s *Store) LoadLimits(ctx context.Context) (map[int]int, error) {
 	for k, v := range parsed {
 		lvl, err := strconv.Atoi(k)
 		if err != nil {
-			return nil, fmt.Errorf("parse CUSTOM_SIGNAL_LIMITS: bad level %q: %w", k, err)
+			slog.Warn("CUSTOM_SIGNAL_LIMITS: skip non-integer level", "level", k)
+			continue
 		}
-		out[lvl] = v.Stocks
+		if v.Stocks == nil || *v.Stocks < 0 {
+			slog.Warn("CUSTOM_SIGNAL_LIMITS: skip level with missing or negative stocks", "level", k)
+			continue
+		}
+		out[lvl] = *v.Stocks
 	}
 	return out, nil
 }
 
 // LoadSettings 回已綁定 Telegram 的 user 的 enabled 設定。Rank 對該 user 全部設定計算後才過濾。
+// 依 rank, user_id 排序，讓不同使用者交錯、同一使用者的訊息不會連續送出（Telegram 單一 chat 約 1 則/秒）；
+// 呼叫端不可假設同一使用者的設定相鄰。
 // conditions 無法解析成 []Condition 的列記 warn 後略過。
 func (s *Store) LoadSettings(ctx context.Context) ([]Setting, error) {
 	rows, err := s.q.Query(ctx, `
@@ -95,7 +108,7 @@ func (s *Store) LoadSettings(ctx context.Context) ([]Setting, error) {
 		FROM ranked r
 		JOIN users u ON u.id = r.user_id
 		WHERE r.enabled AND u.telegram_chat_id IS NOT NULL
-		ORDER BY u.id, r.rn`)
+		ORDER BY r.rn, u.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -263,10 +276,11 @@ func (s *Store) RecordSent(ctx context.Context, userID, symbol string, d time.Ti
 	return nil
 }
 
-// ClearTelegram 清空使用者的三個 telegram 欄位
-func (s *Store) ClearTelegram(ctx context.Context, userID string) error {
+// ClearTelegram 清空使用者的三個 telegram 欄位；只在目前綁定仍是 chatID 時才清，
+// 避免跑到一半使用者重新綁定新帳號時把新綁定清掉。
+func (s *Store) ClearTelegram(ctx context.Context, userID string, chatID int64) error {
 	_, err := s.q.Exec(ctx, `
 		UPDATE users SET telegram_chat_id = NULL, telegram_username = NULL, telegram_bound_at = NULL
-		WHERE id = $1`, userID)
+		WHERE id = $1 AND telegram_chat_id = $2`, userID, chatID)
 	return err
 }

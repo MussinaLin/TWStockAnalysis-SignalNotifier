@@ -279,8 +279,15 @@ func TestClearTelegram(t *testing.T) {
 	ctx := context.Background()
 	chat := int64(987654324)
 	u := insertUser(t, tx, 0, &chat)
-	require.NoError(t, New(tx).ClearTelegram(ctx, u))
+	// 不同 chat id → 不動
+	require.NoError(t, New(tx).ClearTelegram(ctx, u, chat+1))
 	var c *int64
+	require.NoError(t, tx.QueryRow(ctx, `SELECT telegram_chat_id FROM users WHERE id = $1`, u).Scan(&c))
+	require.NotNil(t, c)
+	assert.Equal(t, chat, *c)
+
+	require.NoError(t, New(tx).ClearTelegram(ctx, u, chat))
+	c = nil
 	var un *string
 	var at *time.Time
 	require.NoError(t, tx.QueryRow(ctx, `SELECT telegram_chat_id, telegram_username, telegram_bound_at FROM users WHERE id = $1`, u).Scan(&c, &un, &at))
@@ -304,4 +311,13 @@ func TestTryLock(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok3)
 	rel3()
+}
+
+func TestParseLimits(t *testing.T) {
+	got, err := parseLimits([]byte(`{"0":{"stocks":5},"1":{"stocks":20},"x":{"stocks":9},"2":{},"3":{"stocks":-1},"4":{"stocks":0}}`))
+	require.NoError(t, err)
+	assert.Equal(t, map[int]int{0: 5, 1: 20, 4: 0}, got)
+
+	_, err = parseLimits([]byte(`not json`))
+	assert.Error(t, err)
 }

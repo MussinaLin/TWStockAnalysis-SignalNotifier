@@ -22,7 +22,7 @@ type Store interface { // *store.Store 符合
 	LoadBars(ctx context.Context, symbols []string, d time.Time) (map[string]signals.Bar, map[string]signals.PrevBar, error)
 	LoadSentKeys(ctx context.Context, d time.Time) (map[store.SentKey]bool, error)
 	RecordSent(ctx context.Context, userID, symbol string, d time.Time, sides []string, message string) error
-	ClearTelegram(ctx context.Context, userID string) error
+	ClearTelegram(ctx context.Context, userID string, chatID int64) error
 }
 
 type Sender interface {
@@ -90,6 +90,19 @@ func sendWithRetry(ctx context.Context, d Deps, chatID, text string) (sendErr, f
 		return nil, err
 	}
 	return sendOnce(ctx, d, chatID, text)
+}
+
+// recordWithRetry 記錄失敗時以全新 context 重試一次（原 ctx 可能已逾時）。
+// 仍失敗就回錯誤，由呼叫端中止整個流程，避免之後的訊息都沒留下紀錄而在下次重送。
+func recordWithRetry(ctx context.Context, st Store, s store.Setting, day time.Time, sides []string, msg string) error {
+	err := st.RecordSent(ctx, s.UserID, s.Symbol, day, sides, msg)
+	if err == nil {
+		return nil
+	}
+	slog.Error("record sent failed, retrying", "user_id", s.UserID, "symbol", s.Symbol, "error", err)
+	rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return st.RecordSent(rctx, s.UserID, s.Symbol, day, sides, msg)
 }
 
 func Run(ctx context.Context, deps Deps) (Summary, error) {
@@ -206,16 +219,17 @@ func process(ctx context.Context, deps Deps, day time.Time, active []store.Setti
 		}
 		switch {
 		case sendErr == nil:
-			if err := st.RecordSent(ctx, s.UserID, s.Symbol, day, sides, msg); err != nil {
-				slog.Error("record sent failed", "user_id", s.UserID, "symbol", s.Symbol, "error", err)
-			}
 			sum.Sent++
-		case telegram.IsBlocked(sendErr):
-			if err := st.ClearTelegram(ctx, s.UserID); err != nil {
-				slog.Error("clear telegram failed", "user_id", s.UserID, "error", err)
+			if err := recordWithRetry(ctx, st, s, day, sides, msg); err != nil {
+				return fmt.Errorf("record sent (user %s, symbol %s): %w", s.UserID, s.Symbol, err)
 			}
+		case telegram.IsBlocked(sendErr):
 			blocked[s.UserID] = true
-			sum.Unbound++
+			if err := st.ClearTelegram(ctx, s.UserID, s.ChatID); err != nil {
+				slog.Error("clear telegram failed", "user_id", s.UserID, "error", err)
+			} else {
+				sum.Unbound++
+			}
 		default:
 			slog.Error("send failed", "user_id", s.UserID, "symbol", s.Symbol, "error", sendErr)
 			sum.Failed++

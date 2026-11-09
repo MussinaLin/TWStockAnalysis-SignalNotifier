@@ -32,6 +32,10 @@ type fakeStore struct {
 	sent        map[store.SentKey]bool
 	settingsErr error
 
+	recordFails int // RecordSent 前 N 次呼叫回錯誤
+	recordCalls int
+	clearErr    error
+
 	recorded []recorded
 	cleared  []string
 	barSyms  []string
@@ -53,10 +57,17 @@ func (f *fakeStore) LoadSentKeys(ctx context.Context, d time.Time) (map[store.Se
 	return f.sent, nil
 }
 func (f *fakeStore) RecordSent(ctx context.Context, userID, symbol string, d time.Time, sides []string, message string) error {
+	f.recordCalls++
+	if f.recordCalls <= f.recordFails {
+		return errors.New("db write failed")
+	}
 	f.recorded = append(f.recorded, recorded{userID, symbol, sides, message})
 	return nil
 }
-func (f *fakeStore) ClearTelegram(ctx context.Context, userID string) error {
+func (f *fakeStore) ClearTelegram(ctx context.Context, userID string, chatID int64) error {
+	if f.clearErr != nil {
+		return f.clearErr
+	}
 	f.cleared = append(f.cleared, userID)
 	return nil
 }
@@ -306,4 +317,61 @@ func TestRun_StoreErrorAborts(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, h.sender.calls)
 	assert.Empty(t, h.admin.msgs)
+}
+
+func TestRun_RecordSentFailureAborts(t *testing.T) {
+	// 連續失敗兩次 → 中止，第二筆不送
+	h := newHarness(
+		setting("A", 1, "2330", 1, longOK()),
+		setting("B", 2, "2317", 1, longOK()),
+	)
+	h.st.recordFails = 2
+	sum, err := Run(context.Background(), h.deps())
+	require.Error(t, err)
+	assert.Equal(t, 2, h.st.recordCalls)
+	require.Len(t, h.sender.calls, 1)
+	assert.Equal(t, 1, sum.Sent)
+	assert.Empty(t, h.admin.msgs)
+
+	// 失敗一次後重試成功 → 繼續
+	h = newHarness(
+		setting("A", 1, "2330", 1, longOK()),
+		setting("B", 2, "2317", 1, longOK()),
+	)
+	h.st.recordFails = 1
+	sum, err = Run(context.Background(), h.deps())
+	require.NoError(t, err)
+	require.Len(t, h.sender.calls, 2)
+	assert.Equal(t, 2, sum.Sent)
+	assert.Len(t, h.st.recorded, 2)
+}
+
+func TestRun_ClearTelegramFailureNotCountedUnbound(t *testing.T) {
+	h := newHarness(
+		setting("A", 1, "2330", 1, longOK()),
+		setting("A", 1, "2317", 2, longOK()),
+	)
+	h.sender.errs["1"] = []error{&telegram.APIError{StatusCode: 403, Description: "Forbidden: bot was blocked by the user"}}
+	h.st.clearErr = errors.New("db down")
+	sum, err := Run(context.Background(), h.deps())
+	require.NoError(t, err)
+	assert.Equal(t, 0, sum.Unbound)
+	require.Len(t, h.sender.calls, 1) // 仍標記 blocked，略過其餘設定
+}
+
+func TestRun_WithPrevBarChangePercent(t *testing.T) {
+	c := signals.Condition{ID: "g", Side: "long", Kind: "kd_cross", Cross: "golden"}
+	s := setting("u1", 111, "2330", 1, c)
+	h := newHarness(s)
+	h.st.bars["2330"] = signals.Bar{Symbol: "2330", Name: "名2330", Close: f64(102), KDK: f64(60), KDD: f64(50)}
+	h.st.prev["2330"] = signals.PrevBar{Close: f64(100), KDK: f64(40), KDD: f64(50)}
+	sum, err := Run(context.Background(), h.deps())
+	require.NoError(t, err)
+	assert.Equal(t, 1, sum.Sent)
+	require.Len(t, h.sender.calls, 1)
+	p := h.st.prev["2330"]
+	want := signals.FormatMessage(h.st.bars["2330"], &p, testDate,
+		[]signals.Hit{{Side: "long", Conditions: []signals.Condition{c}}}, "https://example.com")
+	assert.Equal(t, want, h.sender.calls[0].Text)
+	assert.Contains(t, want, "（+2.00%）")
 }

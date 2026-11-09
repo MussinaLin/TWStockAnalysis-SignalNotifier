@@ -1,7 +1,7 @@
 # TWStockAnalysis-SignalNotifier
 
 台股訊號分析網站的每日自訂訊號 Telegram 通知任務，使用 Go。
-每天在 TWStockAnalysis 算完指標後執行一次：讀取使用者的自訂訊號設定與最愛清單，判斷當日是否觸發，透過使用者 bot 發送 Telegram 訊息，並把發送紀錄寫入 `user_signal_notifications`（同一使用者、股票、交易日、方向只會發一次）。每次跑完即結束，不是常駐服務。
+每天在 TWStockAnalysis 算完指標後執行一次：讀取使用者的自訂訊號設定（`user_stock_signals`，不限於最愛清單的股票），判斷當日是否觸發，透過使用者 bot 發送 Telegram 訊息，並把發送紀錄寫入 `user_signal_notifications`（同一使用者、股票、交易日、方向只會發一次）。每次跑完即結束，不是常駐服務。
 
 判斷規則與訊息格式以 spec 為準：`TWStockAnalysis-AccountService/docs/superpowers/specs/2026-11-09-custom-signal-design.md`。
 
@@ -25,7 +25,7 @@ cp .env.example .env
 | `TELEGRAM_BOT_TOKEN` | 否 | 管理者 bot token；與 `TELEGRAM_CHAT_ID` 都設定才會發每日摘要與告警 |
 | `TELEGRAM_CHAT_ID` | 否 | 接收摘要與告警的 chat id |
 
-所有環境變數會先去除前後空白，純空白視為未設定。程式不會把 token 或 `DATABASE_URL` 寫進 log。
+所有環境變數（含 `DATABASE_URL`）會先去除前後空白，純空白視為未設定。程式不會把 token 或 `DATABASE_URL` 寫進 log。
 
 ## 資料庫
 
@@ -45,9 +45,11 @@ psql "$DATABASE_URL" -f db/schema.sql
 
 ```bash
 go run .               # 本地
-railway run go run .   # 透過 Railway
+railway run go run .   # 透過 Railway（見下方警告）
 go test ./...          # 測試（store 測試會連 .env 的 DB，並在 transaction 中 rollback）
 ```
+
+警告：`railway run` 使用的是目前連結（linked）環境的變數；若連結到 PROD，會對 PROD DB 寫入並發送真實 Telegram 訊息。執行前務必確認連結的是 DEV 環境（`railway status`）。
 
 ## 部署（Railway Cron）
 
@@ -60,8 +62,10 @@ go test ./...          # 測試（store 測試會連 .env 的 DB，並在 transa
 | 完整跑完（即使部分訊息發送失敗） | 0 |
 | 取不到 advisory lock（前一次仍在執行，log `previous run still in progress`） | 0 |
 | 指標尚未就緒 | 1（若有設定管理者 bot，會發送告警） |
-| DB / 設定錯誤、缺少必填環境變數 | 1 |
+| DB / 設定錯誤、缺少必填環境變數、發送紀錄寫入連續失敗 | 1 |
 
 ## 補跑
 
-指標尚未就緒而 exit 1 時，等 TWStockAnalysis 算完後直接重跑即可。已發送過的（使用者、股票、交易日、方向）不會重複發送，所以任何時候重跑都是安全的。
+指標尚未就緒而 exit 1 時，等 TWStockAnalysis 算完後直接重跑即可。重跑不會重送已記錄的（使用者、股票、交易日、方向）；但若程式在「訊息已送出」與「紀錄寫入」之間當掉，該則訊息可能重複發送一次。
+
+若執行逾時（30 分鐘）或中途中止（例如寫入發送紀錄連續失敗），同樣直接重跑即可。Railway Cron 的 restart policy 請設為 "Never"，避免 exit 1 後被自動重啟而一直重試。

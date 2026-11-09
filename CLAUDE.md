@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TWStockAnalysis-SignalNotifier 是台股訊號分析網站的每日自訂訊號 Telegram 通知任務（Go + PostgreSQL）。在 TWStockAnalysis 算完指標後由 Railway Cron 執行一次：載入使用者的自訂訊號設定與最愛，判斷當日觸發的訊號，用使用者 bot 發送訊息並記錄到 `user_signal_notifications`，跑完即結束。與 AccountService、TWStockAPI 共用同一個 DB。
+TWStockAnalysis-SignalNotifier 是台股訊號分析網站的每日自訂訊號 Telegram 通知任務（Go + PostgreSQL）。在 TWStockAnalysis 算完指標後由 Railway Cron 執行一次：載入使用者的自訂訊號設定（`user_stock_signals`，任何股票皆可，不限最愛），判斷當日觸發的訊號，用使用者 bot 發送訊息並記錄到 `user_signal_notifications`，跑完即結束。與 AccountService、TWStockAPI 共用同一個 DB。
 
 判斷規則與訊息格式以 spec 為準：`/Users/mussina/Repo/TWStockAnalysis-AccountService/docs/superpowers/specs/2026-11-09-custom-signal-design.md`。
 
